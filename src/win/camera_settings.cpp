@@ -1,8 +1,67 @@
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__)
+#include <windows.h>
+#include <objbase.h>
 #include <dshow.h>
+#include <iostream>
+#include <sstream>
 #include "camera_settings_base.h"
 
 HRESULT QueryIBaseFilter(const wchar_t *wszName, int index, IBaseFilter **ppVideoCaptureFilter);
+
+// Simple logging helper: prints to stderr and OutputDebugString (visible in debugger)
+static void DebugLog(const std::string &msg)
+{
+  std::cerr << "[camera-settings] " << msg << std::endl;
+  std::string withPrefix = "[camera-settings] " + msg + "\n";
+  OutputDebugStringA(withPrefix.c_str());
+}
+
+// Helper to format HRESULT as hex
+static std::string HResultToHex(HRESULT hr)
+{
+  std::ostringstream oss;
+  oss << "0x" << std::hex << hr;
+  return oss.str();
+}
+
+// Helper function to safely initialize COM
+// Returns true if COM was initialized by this call, false if it was already initialized
+bool SafeCoInitialize(bool *pWasInitialized)
+{
+  HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+  if (hr == RPC_E_CHANGED_MODE)
+  {
+    // Try with multithreaded mode if apartment threaded failed
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  }
+
+  if (pWasInitialized)
+  {
+    *pWasInitialized = (hr == S_OK);
+  }
+
+  if (FAILED(hr))
+  {
+    DebugLog("SafeCoInitialize failed, hr=" + HResultToHex(hr));
+  }
+  else
+  {
+    DebugLog(std::string("SafeCoInitialize succeeded, hr=") + HResultToHex(hr) +
+             (pWasInitialized && *pWasInitialized ? " (initialized here)" : " (already initialized)"));
+  }
+
+  return SUCCEEDED(hr);
+}
+
+// Helper function to safely uninitialize COM
+void SafeCoUninitialize(bool wasInitialized)
+{
+  if (wasInitialized)
+  {
+    DebugLog("SafeCoUninitialize: calling CoUninitialize");
+    CoUninitialize();
+  }
+}
 
 std::map<int, std::string> propMapVideo = {
     {VideoProcAmp_Brightness, "Brightness"},
@@ -115,30 +174,54 @@ int GetCacheCount() {
 
 void OpenCameraSettings(const wchar_t *wszName, int index)
 {
-  CoInitialize(NULL);
+  bool wasInitialized = false;
+  if (!SafeCoInitialize(&wasInitialized))
+  {
+    DebugLog("OpenCameraSettings: COM init failed");
+    throw std::runtime_error("Failed to initialize COM");
+  }
+
+  DebugLog("OpenCameraSettings: starting, index=" + std::to_string(index));
 
   IBaseFilter *pVideoCaptureFilter = NULL;
   HRESULT hr = QueryIBaseFilter(wszName, index, &pVideoCaptureFilter);
 
-  CoUninitialize();
+  // We don't cache/use the filter across threads anymore; release it immediately if obtained
+  if (SUCCEEDED(hr) && pVideoCaptureFilter)
+  {
+    pVideoCaptureFilter->Release();
+    pVideoCaptureFilter = NULL;
+  }
+
+  SafeCoUninitialize(wasInitialized);
 
   if (FAILED(hr))
   {
+    DebugLog("OpenCameraSettings: QueryIBaseFilter failed, hr=" + HResultToHex(hr));
     throw std::runtime_error("Failed to query device");
   }
+
+  DebugLog("OpenCameraSettings: success");
 }
 
 void CloseCameraSettings(const wchar_t *wszName, int index)
 {
   if (IFM.Has(wszName, index))
   {
-    CoInitialize(NULL);
+    DebugLog("CloseCameraSettings: found cached filter, index=" + std::to_string(index));
+
+    bool wasInitialized = false;
+    if (!SafeCoInitialize(&wasInitialized))
+    {
+      DebugLog("CloseCameraSettings: COM init failed");
+      throw std::runtime_error("Failed to initialize COM");
+    }
 
     IBaseFilter *pVideoCaptureFilter = IFM.Get(wszName, index);
     pVideoCaptureFilter->Release();
     IFM.Delete(wszName, index);
 
-    CoUninitialize();
+    SafeCoUninitialize(wasInitialized);
   }
 }
 
@@ -147,11 +230,14 @@ void CloseCameraSettings(const wchar_t *wszName, int index)
  */
 HRESULT QueryIBaseFilter(const wchar_t *wszName, int index, IBaseFilter **ppVideoCaptureFilter)
 {
+  DebugLog("QueryIBaseFilter: start, index=" + std::to_string(index));
+
   // create system device enumerator
   ICreateDevEnum *pCreateDevEnum = NULL;
   HRESULT hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void **)&pCreateDevEnum);
   if (FAILED(hr))
   {
+    DebugLog("QueryIBaseFilter: CoCreateInstance failed, hr=" + HResultToHex(hr));
     return hr;
   }
 
@@ -160,6 +246,7 @@ HRESULT QueryIBaseFilter(const wchar_t *wszName, int index, IBaseFilter **ppVide
   hr = pCreateDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnumMoniker, 0);
   if (FAILED(hr))
   {
+    DebugLog("QueryIBaseFilter: CreateClassEnumerator failed, hr=" + HResultToHex(hr));
     pCreateDevEnum->Release();
     return hr;
   }
@@ -192,16 +279,17 @@ HRESULT QueryIBaseFilter(const wchar_t *wszName, int index, IBaseFilter **ppVide
     // compare device friendly name with specified name
     if (count == index || wcscmp(varName.bstrVal, wszName) == 0)
     {
+      DebugLog("QueryIBaseFilter: found matching device, index=" + std::to_string(count));
+
       hr = pMoniker->BindToObject(NULL, NULL, IID_IBaseFilter, (void **)ppVideoCaptureFilter);
       if (FAILED(hr))
       {
+        DebugLog("QueryIBaseFilter: BindToObject failed, hr=" + HResultToHex(hr));
         VariantClear(&varName);
         pPropertyBag->Release();
         pMoniker->Release();
         continue;
       }
-
-      IFM.Set(wszName, index, *ppVideoCaptureFilter);
 
       // release resources
       VariantClear(&varName);
@@ -221,6 +309,7 @@ HRESULT QueryIBaseFilter(const wchar_t *wszName, int index, IBaseFilter **ppVide
   }
 
   // device not found
+  DebugLog("QueryIBaseFilter: device not found");
   pEnumMoniker->Release();
   pCreateDevEnum->Release();
   return E_FAIL;
@@ -231,27 +320,24 @@ HRESULT QueryIBaseFilter(const wchar_t *wszName, int index, IBaseFilter **ppVide
  */
 HRESULT QueryAllInterface(const wchar_t *wszName, int index, IAMVideoProcAmp **ppProcAmp, IAMCameraControl **ppCameraControl)
 {
+  DebugLog("QueryAllInterface: start");
   HRESULT hr;
   // create video capture filter
   IBaseFilter *pVideoCaptureFilter = NULL;
 
-  if (IFM.Has(wszName, index))
+  // Always query the filter on the current thread to avoid cross-thread COM issues
+  hr = QueryIBaseFilter(wszName, index, &pVideoCaptureFilter);
+  if (FAILED(hr) || !pVideoCaptureFilter)
   {
-    pVideoCaptureFilter = IFM.Get(wszName, index);
-  }
-  else
-  {
-    hr = QueryIBaseFilter(wszName, index, &pVideoCaptureFilter);
-    if (FAILED(hr))
-    {
-      return E_FAIL;
-    }
+    DebugLog("QueryAllInterface: QueryIBaseFilter failed, hr=" + HResultToHex(hr));
+    return E_FAIL;
   }
 
   // get IAMCameraControl interface
   hr = pVideoCaptureFilter->QueryInterface(IID_IAMCameraControl, (void **)ppCameraControl);
   if (FAILED(hr))
   {
+    DebugLog("QueryAllInterface: QueryInterface(IID_IAMCameraControl) failed, hr=" + HResultToHex(hr));
     // pVideoCaptureFilter->Release();
     return E_FAIL;
   }
@@ -260,16 +346,28 @@ HRESULT QueryAllInterface(const wchar_t *wszName, int index, IAMVideoProcAmp **p
   hr = pVideoCaptureFilter->QueryInterface(IID_IAMVideoProcAmp, (void **)ppProcAmp);
   if (FAILED(hr))
   {
-    // pVideoCaptureFilter->Release();
+    DebugLog("QueryAllInterface: QueryInterface(IID_IAMVideoProcAmp) failed, hr=" + HResultToHex(hr));
+    pVideoCaptureFilter->Release();
     return E_FAIL;
   }
-  // pVideoCaptureFilter->Release();
+
+  // We no longer keep the filter cached here; release our reference
+  pVideoCaptureFilter->Release();
+
+  DebugLog("QueryAllInterface: success");
   return S_OK;
 }
 
 std::vector<CameraSetting> GetCameraSettings(const wchar_t *wszName, int index)
 {
-  CoInitialize(NULL);
+  bool wasInitialized = false;
+  if (!SafeCoInitialize(&wasInitialized))
+  {
+    DebugLog("GetCameraSettings: COM init failed");
+    throw std::runtime_error("Failed to initialize COM");
+  }
+
+  DebugLog("GetCameraSettings: start");
 
   IAMVideoProcAmp *pProcAmp = NULL;
   IAMCameraControl *pCameraControl = NULL;
@@ -279,7 +377,8 @@ std::vector<CameraSetting> GetCameraSettings(const wchar_t *wszName, int index)
   HRESULT hr = QueryAllInterface(wszName, index, &pProcAmp, &pCameraControl);
   if (FAILED(hr))
   {
-    CoUninitialize();
+    DebugLog("GetCameraSettings: QueryAllInterface failed");
+    SafeCoUninitialize(wasInitialized);
     throw std::runtime_error("Failed to query device");
   }
   else
@@ -290,14 +389,16 @@ std::vector<CameraSetting> GetCameraSettings(const wchar_t *wszName, int index)
       hr = pProcAmp->GetRange(i, &min, &max, &step, &def, &range_flags);
       if (FAILED(hr))
       {
-        // std::cerr << "Failed to get range" << std::endl;
+        DebugLog("GetCameraSettings: VideoProcAmp GetRange failed for index=" + std::to_string(i) +
+                 ", hr=" + HResultToHex(hr));
         continue;
       }
 
       hr = pProcAmp->Get(i, &val, &flags);
       if (FAILED(hr))
       {
-        // std::cerr << "Failed to get value" << std::endl;
+        DebugLog("GetCameraSettings: VideoProcAmp Get failed for index=" + std::to_string(i) +
+                 ", hr=" + HResultToHex(hr));
         continue;
       }
 
@@ -320,14 +421,16 @@ std::vector<CameraSetting> GetCameraSettings(const wchar_t *wszName, int index)
       hr = pCameraControl->GetRange(i, &min, &max, &step, &def, &range_flags);
       if (FAILED(hr))
       {
-        // std::cerr << "Failed to get range" << std::endl;
+        DebugLog("GetCameraSettings: CameraControl GetRange failed for index=" + std::to_string(i) +
+                 ", hr=" + HResultToHex(hr));
         continue;
       }
 
       hr = pCameraControl->Get(i, &val, &flags);
       if (FAILED(hr))
       {
-        // std::cerr << "Failed to get value" << std::endl;
+        DebugLog("GetCameraSettings: CameraControl Get failed for index=" + std::to_string(i) +
+                 ", hr=" + HResultToHex(hr));
         continue;
       }
 
@@ -347,21 +450,30 @@ std::vector<CameraSetting> GetCameraSettings(const wchar_t *wszName, int index)
     pCameraControl->Release();
   }
 
-  CoUninitialize();
+  SafeCoUninitialize(wasInitialized);
 
+  DebugLog("GetCameraSettings: success, settings count=" + std::to_string(settings.size()));
   return settings;
 }
 
 void SetCameraSettings(const wchar_t *wszName, int index, const std::vector<CameraSettingSetter> &settings)
 {
-  CoInitialize(NULL);
+  bool wasInitialized = false;
+  if (!SafeCoInitialize(&wasInitialized))
+  {
+    DebugLog("SetCameraSettings: COM init failed");
+    throw std::runtime_error("Failed to initialize COM");
+  }
+
+  DebugLog("SetCameraSettings: start, settings size=" + std::to_string(settings.size()));
 
   IAMVideoProcAmp *pProcAmp = NULL;
   IAMCameraControl *pCameraControl = NULL;
   HRESULT hr = QueryAllInterface(wszName, index, &pProcAmp, &pCameraControl);
   if (FAILED(hr))
   {
-    CoUninitialize();
+    DebugLog("SetCameraSettings: QueryAllInterface failed");
+    SafeCoUninitialize(wasInitialized);
     throw std::runtime_error("Failed to query device");
   }
   else
@@ -376,7 +488,8 @@ void SetCameraSettings(const wchar_t *wszName, int index, const std::vector<Came
         hr = pProcAmp->Set(prop, setting.val, flags);
         if (FAILED(hr))
         {
-          std::cerr << "Failed to set value. Error code: 0x" << std::hex << hr << std::endl;
+          DebugLog("SetCameraSettings: pProcAmp->Set failed for prop=" + setting.prop +
+                   ", hr=" + HResultToHex(hr));
           continue;
         }
       }
@@ -386,15 +499,17 @@ void SetCameraSettings(const wchar_t *wszName, int index, const std::vector<Came
         hr = pCameraControl->Set(prop, setting.val, flags);
         if (FAILED(hr))
         {
-          std::cerr << "Failed to set value. Error code: 0x" << std::hex << hr << std::endl;
+          DebugLog("SetCameraSettings: pCameraControl->Set failed for prop=" + setting.prop +
+                   ", hr=" + HResultToHex(hr));
           continue;
         }
       }
       else
       {
+        DebugLog("SetCameraSettings: invalid prop=" + setting.prop);
         pProcAmp->Release();
         pCameraControl->Release();
-        CoUninitialize();
+        SafeCoUninitialize(wasInitialized);
         throw std::runtime_error("Invalid prop");
       }
     }
@@ -402,28 +517,31 @@ void SetCameraSettings(const wchar_t *wszName, int index, const std::vector<Came
     pCameraControl->Release();
   }
 
-  CoUninitialize();
+  SafeCoUninitialize(wasInitialized);
+  DebugLog("SetCameraSettings: success");
 }
 
 std::vector<Resolution> GetCameraResolutions(const wchar_t *wszName, int index)
 {
-  CoInitialize(NULL);
+  bool wasInitialized = false;
+  if (!SafeCoInitialize(&wasInitialized))
+  {
+    DebugLog("GetCameraResolutions: COM init failed");
+    throw std::runtime_error("Failed to initialize COM");
+  }
+
+  DebugLog("GetCameraResolutions: start");
 
   HRESULT hr;
   // create video capture filter
   IBaseFilter *pVideoCaptureFilter = NULL;
-  if (IFM.Has(wszName, index))
+  // Always query the filter on the current thread instead of using a cached one
+  hr = QueryIBaseFilter(wszName, index, &pVideoCaptureFilter);
+  if (FAILED(hr) || !pVideoCaptureFilter)
   {
-    pVideoCaptureFilter = IFM.Get(wszName, index);
-  }
-  else
-  {
-    hr = QueryIBaseFilter(wszName, index, &pVideoCaptureFilter);
-    if (FAILED(hr))
-    {
-      CoUninitialize();
-      throw std::runtime_error("Failed to query device");
-    }
+    DebugLog("GetCameraResolutions: QueryIBaseFilter failed, hr=" + HResultToHex(hr));
+    SafeCoUninitialize(wasInitialized);
+    throw std::runtime_error("Failed to query device");
   }
 
   std::vector<Resolution> resolutions;
@@ -434,7 +552,8 @@ std::vector<Resolution> GetCameraResolutions(const wchar_t *wszName, int index)
   if (FAILED(hr))
   {
     pVideoCaptureFilter->Release();
-    CoUninitialize();
+    DebugLog("GetCameraResolutions: EnumPins failed, hr=" + HResultToHex(hr));
+    SafeCoUninitialize(wasInitialized);
     throw std::runtime_error("Failed to enumerate pins");
   }
 
@@ -486,10 +605,11 @@ std::vector<Resolution> GetCameraResolutions(const wchar_t *wszName, int index)
   }
 
   pEnum->Release();
-  // pVideoCaptureFilter->Release();
+  pVideoCaptureFilter->Release();
 
-  CoUninitialize();
+  SafeCoUninitialize(wasInitialized);
 
+  DebugLog("GetCameraResolutions: success, resolutions count=" + std::to_string(resolutions.size()));
   return resolutions;
 }
 
