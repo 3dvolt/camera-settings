@@ -12,11 +12,12 @@ const cameraList = ref<MediaDeviceInfo[]>([]);
 async function initCamera(re = false) {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
+    console.log(devices)
     const cameras = devices.filter((device) => device.kind === "videoinput");
     cameraList.value = cameras;
   } catch (error) {
     if (!re) {
-      // 如果没有权限，第一次会报错，先请求权限，再重试
+      // If no permission, first attempt will fail, request permission and retry
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       stream.getTracks().forEach((track) => track.stop());
       initCamera();
@@ -76,13 +77,13 @@ watch(selectedResolution, () => {
 
 <template>
   <div class="camera-show">
-    <h2>摄像头</h2>
+    <h2>Camera</h2>
     <video ref="videoRef" width="640" height="480" autoplay></video>
     <div class="ctrl-row">
       <div class="ctrl-left">
         <ElSelect
           v-model="cameraId"
-          placeholder="请选择摄像头"
+          placeholder="Select camera"
           :disabled="isOpen"
         >
           <ElOption
@@ -94,7 +95,7 @@ watch(selectedResolution, () => {
         </ElSelect>
       </div>
       <div class="ctrl-left">
-        <ElSelect v-model="selectedResolution" placeholder="请选择分辨率">
+        <ElSelect v-model="selectedResolution" placeholder="Select resolution">
           <ElOption
             v-for="resolution in resolutionsEx"
             :key="resolution"
@@ -105,10 +106,10 @@ watch(selectedResolution, () => {
       </div>
       <div class="ctrl-right">
         <ElButton type="primary" :disabled="isOpen" @click="openCapture"
-          >打开</ElButton
+          >Open</ElButton
         >
         <ElButton type="danger" :disabled="!isOpen" @click="closeCapture"
-          >关闭</ElButton
+          >Close</ElButton
         >
       </div>
     </div>

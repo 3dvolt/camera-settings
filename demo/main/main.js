@@ -1,7 +1,8 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
+const isDev = !app.isPackaged; // ⬅️ Detect dev vs build mode
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   const mainWindow = new BrowserWindow({
     width: 1000,
     height: 680,
@@ -18,7 +19,12 @@ app.whenReady().then(async () => {
     },
   });
 
-  mainWindow.loadURL("http://localhost:5173");
+  // 🔁 Load dev server or built index.html
+  if (isDev) {
+    mainWindow.loadURL("http://localhost:5173");
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  }
 
   mainWindow.on("ready-to-show", () => {
     mainWindow.maximize();

@@ -46,6 +46,13 @@ onBeforeUnmount(() => {
 
 async function changeSetting(settings: CameraSettingInfo[]) {
   try {
+
+    console.log("changed set",settings.map((setting) => ({
+      prop: setting.prop,
+      val: setting.val,
+      isAuto: setting.isAuto,
+    })))
+
     cs?.setSettings(
       settings.map((setting) => ({
         prop: setting.prop,
@@ -55,7 +62,7 @@ async function changeSetting(settings: CameraSettingInfo[]) {
     );
   } catch (error: any) {
     ElDialog.alert({
-      title: "设置失败",
+      title: "Setting Failed",
       message: error.message,
     });
   }
@@ -66,13 +73,13 @@ async function changeSetting(settings: CameraSettingInfo[]) {
   <div class="camera-settings">
     <CameraSettingsItem
       v-loading="loading"
-      title="视频控制"
+      title="Video Control"
       :settings="videoSettings"
       @change="changeSetting"
     />
     <CameraSettingsItem
       v-loading="loading"
-      title="相机控制"
+      title="Camera Control"
       :settings="cameraSettings"
       @change="changeSetting"
     />

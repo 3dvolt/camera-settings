@@ -1,7 +1,5 @@
 # camera-settings [![npm](https://img.shields.io/npm/v/camera-settings.svg)](https://npmjs.com/package/camera-settings)
 
-English | [中文](./README.zh-CN.md)
-
 Retrieve and modify the configuration of USB cameras, supporting both Windows and Linux environments. Typically used for Electron applications.
 
 - On Windows, it uses [DirectShow](https://docs.microsoft.com/en-us/windows/win32/directshow/directshow).

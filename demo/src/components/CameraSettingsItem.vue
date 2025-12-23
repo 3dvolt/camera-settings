@@ -28,13 +28,13 @@ function changeToDef() {
     <div class="settings-ctrl">
       <h2>
         {{ title }} &nbsp;&nbsp;&nbsp;
-        <ElButton type="warning" @click="changeToDef()">恢复默认</ElButton>
+        <ElButton type="warning" @click="changeToDef()">Reset to Default</ElButton>
       </h2>
       <ElForm>
         <ElFormItem
           v-for="setting in settings"
           :key="setting.prop"
-          :label="settingNameMap[setting.prop]"
+          :label="setting.prop"
           label-width="70px"
         >
           <ElSlider
@@ -50,7 +50,7 @@ function changeToDef() {
       </ElForm>
     </div>
     <div>
-      <h2>自动</h2>
+      <h2>Auto</h2>
       <ElForm>
         <ElFormItem
           v-for="setting in settings"

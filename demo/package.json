@@ -1,16 +1,24 @@
 {
   "name": "camera-settings-demo",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "main/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
-    "start": "electron ."
+    "start": "electron .",
+    "electron:build": "electron-builder"
   },
   "dependencies": {
     "camera-settings": "../"
+  },
+  "build": {
+    "productName": "Camera Settings Demo",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist-electron"
+    }
   },
   "devDependencies": {
     "@electron/rebuild": "^3.2.13",
